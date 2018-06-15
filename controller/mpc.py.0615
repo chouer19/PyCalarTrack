@@ -45,17 +45,21 @@ class MPC:
         self.NX = 4  # x = x, y, v, yaw
         self.NU = 2  # a = [accel, steer]
         self.T = 5  # horizon length
-        self.HorizonLength = 5
+        self.HorizonLength = 10
         #self.HorizonLength = 10
-        self.R = np.diag([0.01, 0.01])  # input cost matrix
-        self.Rd = np.diag([0.01, 1.0])  # input difference cost matrix
-        self.Q = np.diag([1.0, 1.0, 0.5, 0.5])  # state cost matrix
-        self.Q = np.diag([1.0, 1.0, 1.0, 0.5])  # state cost matrix
+        self.R = np.diag([0.0, 0.01])  # input cost matrix
+        self.Rd = np.diag([0.0, 1.0])  # input difference cost matrix
+        self.Q = np.diag([1.0, 1.0, 0.0, 0.5])  # state cost matrix
         self.Qf = self.Q  # state final matrix
+        self.GOAL_DIS = 1.5  # goal distance
+        self.GOAL_DIS = 5  # goal distance
+        self.STOP_SPEED = 0.5 / 3.6  # stop speed
+        self.MAX_TIME = 500.0  # max simulation time
 
         # iterative paramter
+        self.MAX_ITER = 5  # Max iteration
         self.MAX_ITER = 8  # Max iteration
-        self.DU_TH = 0.1  # iteration finish param
+        self.DU_TH = 0.08  # iteration finish param
         self.N_IND_SEARCH = 10  # Search index number
     
         self.show_animation = True
@@ -68,6 +72,11 @@ class MPC:
         if filename is not None:
             self.road = Road(filename)
         self.state = State()
+
+        self.step = 0
+        self.reward = 0
+        self.eDis = 0
+        self.eYaw = 0
 
         self.oa = [0.0] * self.HorizonLength
         self.odelta = [0.0] * self.HorizonLength
@@ -117,31 +126,25 @@ class MPC:
             map_points.append( (int(cx * PIXEL_DENSITY + FULL_OFFSET_X),int(cy * PIXEL_DENSITY + FULL_OFFSET_Y)) )
         return map_points
 
-    def get_linear_model_matrix(self,v, phi, delta):
+    def get_linear_model_matrix(self, v, phi):
         A = np.matrix(np.zeros((self.NX, self.NX)))
         A[0, 0] = 1.0
         A[1, 1] = 1.0
         A[2, 2] = 1.0
         A[3, 3] = 1.0
         A[0, 2] = self.DT * math.cos(phi)
-        A[0, 3] = - self.DT * v * math.sin(phi)
         A[1, 2] = self.DT * math.sin(phi)
-        A[1, 3] = self.DT * v * math.cos(phi)
-        A[3, 2] = self.DT * math.tan(delta)
     
         B = np.matrix(np.zeros((self.NX, self.NU)))
         B[2, 0] = self.DT
-        B[3, 1] = self.DT * v / (self.vehicle.WB * math.cos(delta) ** 2)
+        B[3, 1] = self.DT * v / self.vehicle.WB 
     
-        C = np.matrix(np.zeros((self.NX, 1)))
-        C[0, 0] = self.DT * v * math.sin(phi) * phi
-        C[1, 0] = - self.DT * v * math.cos(phi) * phi
-        C[3, 0] = v * delta / (self.vehicle.WB * math.cos(delta) ** 2)
-    
-        return A, B, C
+        return A, B
     
     
-    def update_state(self,state, a, delta):
+    
+    
+    def update_state(self,state,delta):
         # input check
         if delta >= self.vehicle.MAX_STEER:
             delta = self.vehicle.MAX_STEER
@@ -152,41 +155,32 @@ class MPC:
         state.y = state.y + state.v * math.sin(state.yaw) * self.DT
         state.yaw = state.yaw + state.v / self.vehicle.WB * math.tan(delta) * self.DT
         #state.yaw = pi_2_pi( state.yaw + state.v / self.vehicle.WB * math.tan(delta) * self.DT )
-        state.v = state.v + a * self.DT
-    
-        if state. v > self.vehicle.MAX_SPEED:
-            state.v = self.vehicle.MAX_SPEED
-        elif state. v < self.vehicle.MIN_SPEED:
-            state.v = self.vehicle.MIN_SPEED
+        state.v = state.v + self.state.acc * self.DT
     
         return state
     
     
-    def iterative_linear_mpc_control(self, xref, x0):
+    def iterative_linear_mpc_control(self, xref):
         """
         MPC contorl with updating operational point iteraitvely
         """
-        od = self.odelta
-    
-        dref = np.zeros((1, self.HorizonLength + 1))
 
-        oa = [0.0] * self.HorizonLength
-        if od is None:
-            od = [0.0] * self.HorizonLength
+        if self.odelta is None:
+            self.odelta = [0.0] * self.HorizonLength
     
         for i in range(self.MAX_ITER):
-            xbar = self.predict_motion(x0, od, xref)
-            poa, pod = oa[:], od[:]
-            oa, od, ox, oy, oyaw, ov = self.linear_mpc_control(xref, xbar, x0, dref)
-            du = sum(abs(oa - poa)) + sum(abs(od - pod))  # calc u change value
+            xbar = self.predict_motion()
+            pod = self.odelta[:]
+            self.oa, self.odelta, ox, oy, oyaw, ov = self.linear_mpc_control(xref, xbar)
+            du = sum(abs(self.odelta - pod))  # calc u change value
             if du <= self.DU_TH:
                 break
         else:
             print("Iterative is max iter")
-        self.oa = oa
-        self.odelta = od
     
-    def linear_mpc_control(self,xref, xbar, x0, dref):
+        return self.oa, self.odelta, ox, oy, oyaw, ov
+    
+    def linear_mpc_control(self,xref, xbar):
         """
         linear mpc control
     
@@ -196,6 +190,7 @@ class MPC:
         dref: reference steer angle
         """
     
+        x0 = [self.state.x, self.state.y, self.state.v, self.state.yaw]  # current state
         x = cvxpy.Variable(self.NX, self.HorizonLength + 1)
         u = cvxpy.Variable(self.NU, self.HorizonLength)
     
@@ -208,9 +203,10 @@ class MPC:
             if t != 0:
                 cost += cvxpy.quad_form(xref[:, t] - x[:, t], self.Q)
     
-            A, B, C = self.get_linear_model_matrix(
-                xbar[2, t], xbar[3, t], dref[0, t])
-            constraints += [x[:, t + 1] == A * x[:, t] + B * u[:, t] + C]
+            A, B = self.get_linear_model_matrix(
+                xbar[2, t], xbar[3, t])
+            constraints += [x[:, t + 1] == A * x[:, t] + B * u[:, t]]
+            constraints += [u[0,t] == self.state.acc]
     
             if t < (self.T - 1):
                 cost += cvxpy.quad_form(u[:, t + 1] - u[:, t], self.Rd)
@@ -220,9 +216,6 @@ class MPC:
         cost += cvxpy.quad_form(xref[:, self.HorizonLength] - x[:, self.HorizonLength], self.Qf)
     
         constraints += [x[:, 0] == x0]
-        constraints += [x[2, :] <= self.vehicle.MAX_SPEED]
-        constraints += [x[2, :] >= self.vehicle.MIN_SPEED]
-        constraints += [cvxpy.abs(u[0, :]) < self.vehicle.MAX_ACCEL]
         constraints += [cvxpy.abs(u[1, :]) < self.vehicle.MAX_STEER]
     
         prob = cvxpy.Problem(cvxpy.Minimize(cost), constraints)
@@ -248,8 +241,6 @@ class MPC:
         ncourse = len(self.road.cx)
     
         ind, dis = self.road.findNearest(self.state.x, self.state.y)
-        self.vehicle.errorDis = dis
-        self.vehicle.errorYaw = pi_2_pi(self.state.yaw - self.road.cyaw[ind])
     
         xref[0, 0] = self.road.cx[ind]
         xref[1, 0] = self.road.cy[ind]
@@ -271,14 +262,15 @@ class MPC:
         return xref, ind, dis
     
     #dependent function
-    def predict_motion(self, x0, od, xref):
-        xbar = xref * 0.0
+    def predict_motion(self):
+        xbar = np.zeros((self.NX, self.HorizonLength + 1))
+        x0 = [self.state.x, self.state.y, self.state.v, self.state.yaw]  # current state
         for i in range(len(x0)):
             xbar[i, 0] = x0[i]
     
-        state = State(x=x0[0], y=x0[1], yaw=x0[3], v=x0[2])
-        for (di, i) in zip(od, range(1, self.HorizonLength + 1)):
-            state = self.update_state(state, self.state.acc, di)
+        state = self.state
+        for (di, i) in zip(self.odelta, range(1, self.HorizonLength + 1)):
+            state = self.update_state(state, di)
             xbar[0, i] = state.x
             xbar[1, i] = state.y
             xbar[2, i] = state.v
@@ -292,11 +284,11 @@ class MPC:
     def control_steer(self):
         #xref, ind, dis = self.road.calc_ref_trajectory(self.state, self.HorizonLength)
         xref, ind, dis = self.calc_ref_trajectory()
-        x0 = [self.state.x, self.state.y, self.state.v, self.state.yaw]  # current state
-        self.iterative_linear_mpc_control( xref, x0)
+        oa, odelta, ox, oy, oyaw, ov = self.iterative_linear_mpc_control( xref )
+        
 
         self.render()
-        return self.odelta[0]
+        return odelta[0]
 
 #dependent function
 def main():
@@ -309,12 +301,12 @@ def main():
     def do_simulation2(mpc):
         #get state
         #state = State(x=mpc.cx[0], y=mpc.cy[0], yaw=mpc.cyaw[0], v=0.0)
-        mpc.state = State(x=mpc.road.cx[0], y=mpc.road.cy[0] + 2, yaw=mpc.road.cyaw[0], v=0.0)
+        mpc.state = State(x=mpc.road.cx[0], y=mpc.road.cy[0] + 2, yaw=mpc.road.cyaw[0], v=0.0, acc = 0.1)
         times = 0.0
         odelta, oa = None, None
-        ai,di = 0,0 
+        ai,di = 0.5,0 
         # get new state
-        mpc.state = mpc.update_state(mpc.state, ai, di)
+        mpc.state = mpc.update_state(mpc.state, di)
 
         x = [mpc.state.x]
         y = [mpc.state.y]
@@ -325,15 +317,19 @@ def main():
         a = [0.0]
 
 
-        while times < 500:
+        while times < mpc.MAX_TIME:
 
             # get current state
+            if mpc.state.v <= 10/3.6:
+                mpc.state.acc = 0.1
+            elif mpc.state.v >= 10 / 3.6:
+                mpc.state.acc = -0.1
+            print(mpc.state.v)
             di = mpc.control_steer()
     
-            ai = mpc.oa[0]
     
             # get new state
-            mpc.state = mpc.update_state(mpc.state, ai, di)
+            mpc.state = mpc.update_state(mpc.state, di)
             times = times + mpc.DT
     
             x.append(mpc.state.x)
@@ -342,7 +338,6 @@ def main():
             v.append(mpc.state.v)
             t.append(times)
             d.append(di)
-            a.append(ai)
     
         return t, x, y, yaw, v, d, a
     t, x, y, yaw, v, d, a = do_simulation2(mpc)

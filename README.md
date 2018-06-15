@@ -22,6 +22,18 @@
 
     * init road state action
 
+    * find nearest
+
+    * calc ref
+
+    * pure pursuit steer
+
+    * pid steer
+
+    * lqr steer
+
+    * pid cmd
+
     * calculate command
 
        -> steering angle

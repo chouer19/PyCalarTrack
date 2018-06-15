@@ -50,10 +50,14 @@ class MPC:
         self.R = np.diag([0.01, 0.01])  # input cost matrix
         self.Rd = np.diag([0.01, 1.0])  # input difference cost matrix
         self.Q = np.diag([1.0, 1.0, 0.5, 0.5])  # state cost matrix
-        self.Q = np.diag([1.0, 1.0, 1.0, 0.5])  # state cost matrix
         self.Qf = self.Q  # state final matrix
+        self.GOAL_DIS = 1.5  # goal distance
+        self.GOAL_DIS = 5  # goal distance
+        self.STOP_SPEED = 0.5 / 3.6  # stop speed
+        self.MAX_TIME = 500.0  # max simulation time
 
         # iterative paramter
+        self.MAX_ITER = 5  # Max iteration
         self.MAX_ITER = 8  # Max iteration
         self.DU_TH = 0.1  # iteration finish param
         self.N_IND_SEARCH = 10  # Search index number
@@ -68,6 +72,11 @@ class MPC:
         if filename is not None:
             self.road = Road(filename)
         self.state = State()
+
+        self.step = 0
+        self.reward = 0
+        self.eDis = 0
+        self.eYaw = 0
 
         self.oa = [0.0] * self.HorizonLength
         self.odelta = [0.0] * self.HorizonLength
@@ -141,6 +150,61 @@ class MPC:
         return A, B, C
     
     
+    def plot_car(self, x, y, yaw, steer=0.0, cabcolor="-r", truckcolor="-k"):
+        outline = np.matrix([[-self.vehicle.BACKTOWHEEL, (self.vehicle.LENGTH - self.vehicle.BACKTOWHEEL), (self.vehicle.LENGTH - self.vehicle.BACKTOWHEEL), -self.vehicle.BACKTOWHEEL, -self.vehicle.BACKTOWHEEL],
+                             [self.vehicle.WIDTH / 2, self.vehicle.WIDTH / 2, - self.vehicle.WIDTH / 2, -self.vehicle.WIDTH / 2, self.vehicle.WIDTH / 2]])
+    
+        fr_wheel = np.matrix([[self.vehicle.WHEEL_LEN, -self.vehicle.WHEEL_LEN, -self.vehicle.WHEEL_LEN, self.vehicle.WHEEL_LEN, self.vehicle.WHEEL_LEN],
+                              [-self.vehicle.WHEEL_WIDTH - self.vehicle.TREAD, -self.vehicle.WHEEL_WIDTH - self.vehicle.TREAD, self.vehicle.WHEEL_WIDTH - self.vehicle.TREAD, self.vehicle.WHEEL_WIDTH - self.vehicle.TREAD, -self.vehicle.WHEEL_WIDTH - self.vehicle.TREAD]])
+    
+        rr_wheel = np.copy(fr_wheel)
+    
+        fl_wheel = np.copy(fr_wheel)
+        fl_wheel[1, :] *= -1
+        rl_wheel = np.copy(rr_wheel)
+        rl_wheel[1, :] *= -1
+    
+        Rot1 = np.matrix([[math.cos(yaw), math.sin(yaw)],
+                          [-math.sin(yaw), math.cos(yaw)]])
+        Rot2 = np.matrix([[math.cos(steer), math.sin(steer)],
+                          [-math.sin(steer), math.cos(steer)]])
+    
+        fr_wheel = (fr_wheel.T * Rot2).T
+        fl_wheel = (fl_wheel.T * Rot2).T
+        fr_wheel[0, :] += self.vehicle.WB
+        fl_wheel[0, :] += self.vehicle.WB
+    
+        fr_wheel = (fr_wheel.T * Rot1).T
+        fl_wheel = (fl_wheel.T * Rot1).T
+    
+        outline = (outline.T * Rot1).T
+        rr_wheel = (rr_wheel.T * Rot1).T
+        rl_wheel = (rl_wheel.T * Rot1).T
+    
+        outline[0, :] += x
+        outline[1, :] += y
+        fr_wheel[0, :] += x
+        fr_wheel[1, :] += y
+        rr_wheel[0, :] += x
+        rr_wheel[1, :] += y
+        fl_wheel[0, :] += x
+        fl_wheel[1, :] += y
+        rl_wheel[0, :] += x
+        rl_wheel[1, :] += y
+    
+        plt.plot(np.array(outline[0, :]).flatten(),
+                 np.array(outline[1, :]).flatten(), truckcolor)
+        plt.plot(np.array(fr_wheel[0, :]).flatten(),
+                 np.array(fr_wheel[1, :]).flatten(), truckcolor)
+        plt.plot(np.array(rr_wheel[0, :]).flatten(),
+                 np.array(rr_wheel[1, :]).flatten(), truckcolor)
+        plt.plot(np.array(fl_wheel[0, :]).flatten(),
+                 np.array(fl_wheel[1, :]).flatten(), truckcolor)
+        plt.plot(np.array(rl_wheel[0, :]).flatten(),
+                 np.array(rl_wheel[1, :]).flatten(), truckcolor)
+        plt.plot(x, y, "*")
+    
+    
     def update_state(self,state, a, delta):
         # input check
         if delta >= self.vehicle.MAX_STEER:
@@ -162,15 +226,13 @@ class MPC:
         return state
     
     
-    def iterative_linear_mpc_control(self, xref, x0):
+    def iterative_linear_mpc_control(self, xref, x0, od):
         """
         MPC contorl with updating operational point iteraitvely
         """
-        od = self.odelta
     
         dref = np.zeros((1, self.HorizonLength + 1))
 
-        oa = [0.0] * self.HorizonLength
         if od is None:
             od = [0.0] * self.HorizonLength
     
@@ -183,8 +245,8 @@ class MPC:
                 break
         else:
             print("Iterative is max iter")
-        self.oa = oa
-        self.odelta = od
+    
+        return oa, od, ox, oy, oyaw, ov
     
     def linear_mpc_control(self,xref, xbar, x0, dref):
         """
@@ -248,8 +310,6 @@ class MPC:
         ncourse = len(self.road.cx)
     
         ind, dis = self.road.findNearest(self.state.x, self.state.y)
-        self.vehicle.errorDis = dis
-        self.vehicle.errorYaw = pi_2_pi(self.state.yaw - self.road.cyaw[ind])
     
         xref[0, 0] = self.road.cx[ind]
         xref[1, 0] = self.road.cy[ind]
@@ -293,7 +353,7 @@ class MPC:
         #xref, ind, dis = self.road.calc_ref_trajectory(self.state, self.HorizonLength)
         xref, ind, dis = self.calc_ref_trajectory()
         x0 = [self.state.x, self.state.y, self.state.v, self.state.yaw]  # current state
-        self.iterative_linear_mpc_control( xref, x0)
+        self.oa, self.odelta, ox, oy, oyaw, ov = self.iterative_linear_mpc_control( xref, x0, self.odelta )
 
         self.render()
         return self.odelta[0]
@@ -325,7 +385,7 @@ def main():
         a = [0.0]
 
 
-        while times < 500:
+        while times < mpc.MAX_TIME:
 
             # get current state
             di = mpc.control_steer()
@@ -343,6 +403,23 @@ def main():
             t.append(times)
             d.append(di)
             a.append(ai)
+    
+            #if mpc.show_animation:
+            if False:
+                plt.cla()
+                #if ox is not None:
+                #    plt.plot(ox, oy, "xr", label="MPC")
+                plt.plot(mpc.road.cx, mpc.road.cy, "-r", label="course")
+                plt.plot(x, y,  label="trajectory", linewidth=3)
+                plt.plot(mpc.road.xref[0, :], mpc.road.xref[1, :], "xk", label="xref")
+                mpc.plot_car(mpc.state.x, mpc.state.y ,mpc.state.yaw, steer=di)
+                plt.axis("equal")
+                plt.grid(True)
+                plt.title("speed[km/h]:" + str(round(mpc.state.v*3.6, 2)) +
+                          ", yaw:" + str(round(mpc.state.yaw,2)) + 
+                          ", steer" + str(round(di,2)))
+                plt.pause(0.0001)
+            #time.sleep(0.1)
     
         return t, x, y, yaw, v, d, a
     t, x, y, yaw, v, d, a = do_simulation2(mpc)

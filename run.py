@@ -28,21 +28,35 @@ import numpy as np
 import threading
 from utils import proPrint
 from collections import deque
-
-def Control(game, controller):
-    #game.new_game()
+sys.path.append("libs/")
+from timer import *
+import time
+def Control(game, speed, steer):
+    game.new_game()
+    timer = Timer()
+    while True:
+        timer.tick()
+        if timer.elapsed_seconds_since_lap() >= 0.1:
+            steer.state = game.state()
+            ste = steer.compute_steer()
+            throttle, brake = speed.compute(target, real)
+            game.send_control(steer = ste, throttle = throttle, brake = brake)
+            timer.lap()
+        steer.render()
+        time.sleep(0.025)
     #controller.state = game.state()
     #speedcontrol
     #steercontrol
     #render
 
+    pass
+
 def playGame(args):
     with make_carla_client(args.host, args.port) as client:
         game = simulator.CarlaGame(client, args)
-        #speedController = SpeedController()
-        controller = MPC(filename = './log/all.road')
-        #controller.readmap('test.road')
-        #Control(game, controller)
+        speed = SpeedController()
+        steer = MPC(filename = './log/all.road')
+        Control(game, speed, steer)
 
 def main():
     argparser = argparse.ArgumentParser(

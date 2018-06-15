@@ -35,4 +35,6 @@ class State:
         self.throttle = throttle
         self.acc = acc
         self.offroad = offroad
-
+        self.errorDis = 0
+        self.errorYaw = 0
+        self.setV = 0

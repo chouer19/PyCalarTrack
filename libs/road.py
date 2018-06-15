@@ -122,7 +122,7 @@ class Road:
             while line:
                 if lineNum % 5000 == 0:
                     printGreen('Read ' + str(lineNum) + ' lines......' )    
-                    print(line)
+                    #print(line)
                 contents = line.split('\t')
                 #print(contents)
                 if len(contents) < 4:
@@ -192,6 +192,7 @@ class Road:
         y = math.cos(self.cyaw[ind]) * dyl - math.sin(self.cyaw[ind]) * dxl
     
         self.nearestIndex = ind
+        self.nearestDis = y
         #print(cx,cy)
         #print(ind)
         #print(dxl,dyl)

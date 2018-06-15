@@ -1,3 +1,5 @@
+import sys
+sys.path.append('libs/')
 from timer import Timer
 import time
 timer = Timer()
